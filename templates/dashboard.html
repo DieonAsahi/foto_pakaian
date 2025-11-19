@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - AI Scan</title>
+    <style>
+        /* (Semua CSS Anda sama persis, tidak perlu diubah) */
+        body { font-family: sans-serif; padding: 20px; }
+        .container { max-width: 500px; margin: auto; }
+        #camera-container { position: relative; width: 100%; max-width: 500px; margin: auto; }
+        #camera-feed, #photo-preview { width: 100%; height: auto; border: 1px solid #ccc; }
+        #photo-preview { display: none; }
+        #capture-btn { display: block; width: 100%; padding: 15px; font-size: 1.2em; background-color: #dc3545; color: white; border: none; cursor: pointer; margin-top: 10px; }
+        #loading-overlay { display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); color: white; justify-content: center; align-items: center; text-align: center; }
+        .button-group { margin-top: 15px; }
+        button { padding: 10px 15px; margin: 5px; cursor: pointer; border: 1px solid #ccc; background-color: #f0f0f0; }
+        button.active { background-color: #007bff; color: white; border-color: #007bff; }
+        #save-button, #confirm-yes-btn { background-color: #28a745; color: white; }
+        #status { margin-top: 15px; font-weight: bold; }
+        #capture-canvas { display: none; }
+        #ai-confirmation { display: none; padding: 15px; border: 1px solid #ddd; background: #f9f9f9; text-align: center; }
+        #ai-result-text { font-size: 1.2em; margin-bottom: 15px; }
+        #confirm-no-btn { background-color: #ffc107; }
+        #manual-form { display: none; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <a href="{{ url_for('logout') }}" style="float: right;">Logout</a>
+        <h1>Ambil Foto Pakaian</h1>
+
+        <div id="camera-container">
+            <video id="camera-feed" autoplay playsinline></video>
+            <img id="photo-preview" alt="Hasil Foto">
+            <canvas id="capture-canvas"></canvas>
+            <div id="loading-overlay" style="display: none;">
+                <p>Menganalisis Pakaian...<br>Memprediksi Style, Kategori, dan Warna...</p>
+            </div>
+        </div>
+        <button id="capture-btn">Ambil Foto & Analisis AI</button>
+        <button id="retake-btn" style="display: none;">Ambil Ulang</button>
+
+        <div id="ai-confirmation">
+            <p id="ai-result-text">Prediksi kami: <strong>...</strong></p>
+            <p><strong>Apakah sudah benar?</strong></p>
+            <button id="confirm-yes-btn">✅ Sudah Sesuai</button>
+            <button id="confirm-no-btn">❌ Belum Sesuai (Koreksi)</button>
+        </div>
+
+        <div id="manual-form">
+            <hr>
+            <h3>Koreksi Manual</h3>
+            <input type="hidden" id="user-gender" value="{{ user_gender }}">
+            <input type="hidden" id="user-id" value="{{ user_id }}">
+            <div class="button-group">
+                <label>Pilih Style:</label>
+                <div id="style-buttons"></div>
+            </div>
+            <div class="button-group">
+                <label>Pilih Kategori:</label>
+                <div id="category-buttons"></div>
+            </div>
+            <div class="button-group">
+                <label>Input Warna:</label>
+                <input type="text" id="color-input" placeholder="Misal: Hitam">
+            </div>
+            <div class="button-group">
+                <button id="save-button">Simpan Perubahan</button>
+                <div id="status"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // (Semua variabel global dan elemen HTML sama)
+        const styles = ['Casual', 'Formal', 'Sport'];
+        let selectedStyle = null;
+        let selectedCategory = null;
+        let capturedImageData = null;
+        let aiPredictions = {};
+        const AI_MODE_AKTIF = "{{ ai_mode }}" === "True";
+        
+        const video = document.getElementById('camera-feed');
+        const canvas = document.getElementById('capture-canvas');
+        const preview = document.getElementById('photo-preview');
+        const captureBtn = document.getElementById('capture-btn');
+        const retakeBtn = document.getElementById('retake-btn');
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const aiConfirmationDiv = document.getElementById('ai-confirmation');
+        const aiResultText = document.getElementById('ai-result-text');
+        const confirmYesBtn = document.getElementById('confirm-yes-btn');
+        const confirmNoBtn = document.getElementById('confirm-no-btn');
+        const manualForm = document.getElementById('manual-form');
+        const styleDiv = document.getElementById('style-buttons');
+        const categoryDiv = document.getElementById('category-buttons');
+        const colorInput = document.getElementById('color-input');
+        const saveButton = document.getElementById('save-button');
+        const statusDiv = document.getElementById('status');
+        const userGender = document.getElementById('user-gender').value;
+
+        // (Fungsi startCamera() sama)
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+                video.srcObject = stream;
+            } catch (err) {
+                console.error("Error mengakses kamera: ", err);
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    video.srcObject = stream;
+                } catch (err2) { console.error("Error kamera fallback: ", err2); }
+            }
+        }
+
+        // (Fungsi captureBtn.addEventListener sama)
+        captureBtn.addEventListener('click', async () => {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const context = canvas.getContext('2d');
+            context.drawImage(video, 0, 0, canvas.width, canvas.height);
+            capturedImageData = canvas.toDataURL('image/jpeg', 0.9);
+            
+            preview.src = capturedImageData;
+            preview.style.display = 'block';
+            video.style.display = 'none';
+            captureBtn.style.display = 'none';
+            retakeBtn.style.display = 'block';
+            
+            if (!AI_MODE_AKTIF) {
+                console.log("AI Mode non-aktif, langsung ke mode manual.");
+                showManualForm();
+                return;
+            }
+
+            loadingOverlay.style.display = 'flex';
+            try {
+                const response = await fetch('/predict_image', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image_data: capturedImageData })
+                });
+                loadingOverlay.style.display = 'none';
+                
+                if (!response.ok) { throw new Error("Gagal memprediksi"); }
+                aiPredictions = await response.json();
+                aiResultText.innerHTML = `Prediksi kami: <strong>${aiPredictions.style} ${aiPredictions.kategori} ${aiPredictions.warna}</strong>`;
+                aiConfirmationDiv.style.display = 'block';
+
+            } catch (err) {
+                console.error(err);
+                loadingOverlay.style.display = 'none';
+                showManualForm();
+            }
+        });
+        
+        // (Fungsi confirmYesBtn dan confirmNoBtn sama)
+        confirmYesBtn.addEventListener('click', () => {
+            saveToWardrobe(
+                aiPredictions.style.replace(/[<>?]/g, ''), 
+                aiPredictions.kategori.replace(/[<>?]/g, ''), 
+                aiPredictions.warna
+            );
+        });
+        
+        confirmNoBtn.addEventListener('click', () => {
+            aiConfirmationDiv.style.display = 'none';
+            showManualForm(aiPredictions);
+        });
+        
+        // (Fungsi showManualForm sama)
+        function showManualForm(aiData = null) {
+            manualForm.style.display = 'block';
+            statusDiv.innerText = "";
+            styleDiv.innerHTML = '';
+            styles.forEach(style => {
+                const button = document.createElement('button');
+                button.innerText = style;
+                button.setAttribute('data-value', style);
+                button.onclick = () => {
+                    selectedStyle = style;
+                    fetchCategories(userGender, selectedStyle);
+                };
+                styleDiv.appendChild(button);
+            });
+            
+            if (aiData) {
+                const cleanStyle = aiData.style.replace(/[<>?]/g, '');
+                const cleanKategori = aiData.kategori.replace(/[<>?]/g, '');
+                
+                const styleButton = styleDiv.querySelector(`button[data-value="${cleanStyle}"]`);
+                if (styleButton) { styleButton.click(); }
+                
+                colorInput.value = aiData.warna;
+                
+                setTimeout(() => {
+                    const categoryButton = categoryDiv.querySelector(`button[data-value="${cleanKategori}"]`);
+                    if (categoryButton) { categoryButton.click(); }
+                }, 500);
+            }
+        }
+        
+        // (Fungsi retakeBtn.addEventListener sama)
+        retakeBtn.addEventListener('click', () => {
+            preview.style.display = 'none';
+            video.style.display = 'block';
+            captureBtn.style.display = 'block';
+            retakeBtn.style.display = 'none';
+            manualForm.style.display = 'none';
+            aiConfirmationDiv.style.display = 'none';
+            statusDiv.innerText = "";
+            capturedImageData = null;
+            aiPredictions = {};
+        });
+
+        // (Fungsi fetchCategories sama)
+        async function fetchCategories(gender, style) {
+            highlightButton(styleDiv, style);
+            const response = await fetch('/get_categories', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ style: style })
+            });
+            if (!response.ok) { categoryDiv.innerHTML = "Gagal memuat."; return; }
+            const data = await response.json();
+            const categories = data.categories;
+            categoryDiv.innerHTML = '';
+            selectedCategory = null;
+            categories.forEach(category => {
+                const button = document.createElement('button');
+                button.innerText = category;
+                button.setAttribute('data-value', category);
+                button.onclick = () => {
+                    selectedCategory = category;
+                    highlightButton(categoryDiv, category);
+                };
+                categoryDiv.appendChild(button);
+            });
+        }
+        
+        // --- 7. Fungsi Simpan ke DB (REVISI) ---
+        async function saveToWardrobe(style, category, color) {
+            if (!style || !category || !color || !capturedImageData) {
+                statusDiv.innerText = "Error: Foto, Style, Kategori, dan Warna harus diisi!";
+                statusDiv.style.color = 'red';
+                return;
+            }
+            statusDiv.innerText = "Menyimpan..."; statusDiv.style.color = 'blue';
+
+            const response = await fetch('/save_item', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    style: style,
+                    category: category,
+                    color: color,
+                    // INI PERBAIKANNYA: '_data' diubah menjadi 'image_data'
+                    image_data: capturedImageData 
+                })
+            });
+            
+            const result = await response.json();
+            if (response.ok) {
+                statusDiv.innerText = result.message;
+                statusDiv.style.color = 'green';
+                setTimeout(() => retakeBtn.click(), 2000);
+            } else {
+                statusDiv.innerText = `Error: ${result.message}`;
+                statusDiv.style.color = 'red';
+            }
+        }
+        
+        // (Listener 'saveButton' sama)
+        saveButton.addEventListener('click', () => {
+            saveToWardrobe(selectedStyle, selectedCategory, colorInput.value);
+        });
+        
+        // (Fungsi highlightButton dan init sama)
+        function highlightButton(parentDiv, activeText) {
+            parentDiv.querySelectorAll('button').forEach(btn => btn.classList.remove('active'));
+            const activeButton = parentDiv.querySelector(`button[data-value="${activeText}"]`);
+            if (activeButton) activeButton.classList.add('active');
+        }
+
+        function init() {
+            startCamera();
+        }
+        init();
+    </script>
+</body>
+</html>
